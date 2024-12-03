@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
+	"math"
 )
 
 type WikiResponse struct {
@@ -21,20 +24,52 @@ type WikiResponse struct {
 	} `json:"query"`
 }
 
+type RateLimiter struct {
+	maxRequests    int
+	currentRequests int
+	startTime      time.Time
+}
+
+func NewRateLimiter(maxRequests int) *RateLimiter {
+	return &RateLimiter{
+		maxRequests:    maxRequests,
+		currentRequests: 0,
+		startTime:      time.Now(),
+	}
+}
+
+func (rl *RateLimiter) Wait() {
+	elapsed := time.Since(rl.startTime)
+
+	if rl.currentRequests >= rl.maxRequests {
+		// sleepTime := time.Hour - elapsed
+		sleepTime := time.Duration(math.Max(0, float64(time.Hour - elapsed)))
+		time.Sleep(sleepTime)
+		// Reset after waiting
+		rl.currentRequests = 0
+		rl.startTime = time.Now()
+	}
+
+	rl.currentRequests++
+}
+
 func main() {
-	// Define command-line flags
 	lang := flag.String("lang", "", "Language code (e.g., bn)")
 	inputFile := flag.String("input", "", "Input file with titles")
 	outputFile := flag.String("output", "", "Output file to save extracts")
 	flag.Parse()
 
-	// Validate required flags
 	if *lang == "" || *inputFile == "" || *outputFile == "" {
 		fmt.Println("Usage: go run main.go --lang=bn --input titles.txt --output wiki.txt")
 		os.Exit(1)
 	}
 
-	// Open input file
+	outputDir := filepath.Dir(*outputFile)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		fmt.Printf("Error creating output directory: %v\n", err)
+		os.Exit(1)
+	}
+
 	inputHandle, err := os.Open(*inputFile)
 	if err != nil {
 		fmt.Printf("Error opening input file: %v\n", err)
@@ -42,33 +77,35 @@ func main() {
 	}
 	defer inputHandle.Close()
 
-	// Open output file
-	outputHandle, err := os.Create(*outputFile)
+	outputHandle, err := os.OpenFile(*outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf("Error creating output file: %v\n", err)
+		fmt.Printf("Error opening output file: %v\n", err)
 		os.Exit(1)
 	}
 	defer outputHandle.Close()
 
-	// Read titles from input file
+	rateLimiter := NewRateLimiter(4990)
+
 	scanner := bufio.NewScanner(inputHandle)
 	for scanner.Scan() {
 		title := strings.TrimSpace(scanner.Text())
 		if title == "" {
 			continue
 		}
+		
+		rateLimiter.Wait()
 
-		// Fetch extract for the title
 		extract, err := fetchWikipediaExtract(*lang, title)
 		if err != nil {
 			fmt.Printf("Error fetching extract for %s: %v\n", title, err)
 			continue
 		}
 
-		// Write to output file
-		_, err = outputHandle.WriteString(fmt.Sprintf("%s:\n%s\n\n", title, extract))
+		_, err = outputHandle.WriteString(fmt.Sprintf("%s\n", extract))
 		if err != nil {
 			fmt.Printf("Error writing to output file: %v\n", err)
+		} else {
+			fmt.Printf("Page `%s` successfully fetched\n", title)
 		}
 	}
 
@@ -81,35 +118,34 @@ func main() {
 }
 
 func fetchWikipediaExtract(lang, title string) (string, error) {
-	// Construct API URL
 	encodedTitle := url.QueryEscape(title)
 	apiURL := fmt.Sprintf("https://%s.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&exintro&explaintext&redirects=1&titles=%s", lang, encodedTitle)
 
-	// Send HTTP request
 	resp, err := http.Get(apiURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
-	// Parse JSON response
 	var wikiResp WikiResponse
-	err = json.Unmarshal(body, &wikiResp)
-	if err != nil {
+	if err := json.Unmarshal(body, &wikiResp); err != nil {
 		return "", err
 	}
 
-	// Extract first (and only) page from the response
+	var extract string
 	for _, page := range wikiResp.Query.Pages {
-		// Remove newlines and return cleaned extract
-		return strings.ReplaceAll(page.Extract, "\n", " "), nil
+		extract = strings.ReplaceAll(page.Extract, "\n", " ")
+		break
 	}
 
-	return "", fmt.Errorf("no extract found for title: %s", title)
+	if extract == "" {
+		return "", fmt.Errorf("no extract found for title: %s", title)
+	}
+
+	return extract, nil
 }
