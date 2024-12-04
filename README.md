@@ -1,12 +1,11 @@
+- Go installation: https://go.dev/doc/install
 
-- First Downloads all titles
+- Downloads all titles
 ```
 sh page-title-downloader.sh --lang=bn
 ```
 
-- Go installation: https://go.dev/doc/install
-
-- Second content download from titles
+- Download page coontent from title
 ```
-go run wiki-page-content-download.go --lang=bn  --input=./title-db/bn-titles.txt --output=./content-db/contents.txt
+go run wiki-page-content-download.go --input=./inputs/titles-part-1.txt --output=./outputs/content-1.txt --username=xxx --password=xxx
 ```

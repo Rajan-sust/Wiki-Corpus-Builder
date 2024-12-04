@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-# Main script to download Wikipedia titles for a given language
+# Main script to download Wikipedia titles for a given language and split them
 # Usage: sh main.sh --lang=<language_code>
 
 # Function to display usage instructions
@@ -47,7 +47,40 @@ tail -n +2 "${LANGUAGE}wiki-latest-all-titles" | cut -f 2 > "${LANGUAGE}-titles.
     exit 1
 }
 
+# Count total lines
+TOTAL_LINES=$(wc -l < "${LANGUAGE}-titles.txt")
+echo "Total lines: $TOTAL_LINES"
+
+# Calculate lines per split (rounded down)
+LINES_PER_SPLIT=$((TOTAL_LINES / 7))
+REMAINDER=$((TOTAL_LINES % 7))
+
+# Create split directory
+mkdir -p split-titles
+
+# Split the file
+i=1
+while [ $i -le 7 ]; do
+    START_LINE=$(( (i - 1) * LINES_PER_SPLIT + 1 ))
+    END_LINE=$(( i * LINES_PER_SPLIT ))
+    
+    # Adjust the last split to include any remainder lines
+    if [ $i -eq 7 ]; then
+        END_LINE=$((TOTAL_LINES))
+    fi
+    
+    # Extract the specified line range
+    sed -n "${START_LINE},${END_LINE}p" "${LANGUAGE}-titles.txt" > "split-titles/titles-part-${i}.txt"
+    
+    # Verify the number of lines in the split file
+    SPLIT_LINES=$(wc -l < "split-titles/titles-part-${i}.txt")
+    echo "Part $i: Lines from $START_LINE to $END_LINE (Total: $SPLIT_LINES lines)"
+    
+    # Increment counter
+    i=$((i + 1))
+done
+
 # Return to the original directory
 cd .. || exit
 
-echo "Wikipedia titles for language '${LANGUAGE}' have been downloaded and processed successfully."
+echo "Wikipedia titles for language '${LANGUAGE}' have been downloaded, processed, and split successfully."
