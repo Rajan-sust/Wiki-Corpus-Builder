@@ -125,7 +125,7 @@ func main() {
 	}
 
 	// Rate limiter 5000 for safer 4997
-	rateLimiter := NewRateLimiter(4997)
+	rateLimiter := NewRateLimiter(50000)
 
 	// Process titles
 	scanner := bufio.NewScanner(inputHandle)
