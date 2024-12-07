@@ -6,14 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type WikiResponse struct {
@@ -39,34 +37,6 @@ type LoginResponse struct {
 	} `json:"login"`
 }
 
-type RateLimiter struct {
-	maxRequests     int
-	currentRequests int
-	startTime       time.Time
-}
-
-func NewRateLimiter(maxRequests int) *RateLimiter {
-	return &RateLimiter{
-		maxRequests:     maxRequests,
-		currentRequests: 0,
-		startTime:       time.Now(),
-	}
-}
-
-func (rl *RateLimiter) Wait() {
-	elapsed := time.Since(rl.startTime)
-
-	if rl.currentRequests >= rl.maxRequests {
-		sleepTime := time.Duration(math.Max(0, float64(time.Hour-elapsed)))
-		time.Sleep(sleepTime)
-		// Reset after waiting
-		rl.currentRequests = 0
-		rl.startTime = time.Now()
-	}
-
-	rl.currentRequests++
-}
-
 func main() {
 	inputFile := flag.String("input", "", "Input file with titles")
 	outputFile := flag.String("output", "", "Output file to save extracts")
@@ -78,8 +48,6 @@ func main() {
 		fmt.Println("Usage: go run main.go --input titles.txt --output wiki.txt --username=botname --password=botpass")
 		os.Exit(1)
 	}
-
-	// fmt.Printf("username: `%s`, password: `%s`\n", *username, *password)
 
 	// Create output directory
 	outputDir := filepath.Dir(*outputFile)
@@ -112,7 +80,6 @@ func main() {
 
 	// Perform login
 	loginToken, err := getLoginToken(client)
-	// fmt.Printf("LoginToekn: %s\n", loginToken)
 	if err != nil {
 		fmt.Printf("Error getting login token: %v\n", err)
 		os.Exit(1)
@@ -124,9 +91,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Rate limiter 5000 for safer 4997
-	rateLimiter := NewRateLimiter(50000)
-
 	// Process titles
 	scanner := bufio.NewScanner(inputHandle)
 	for scanner.Scan() {
@@ -134,8 +98,6 @@ func main() {
 		if title == "" {
 			continue
 		}
-
-		rateLimiter.Wait()
 
 		extract, err := fetchWikipediaExtract(client, title)
 		if err != nil {
@@ -246,7 +208,7 @@ func performLogin(client *http.Client, username, password, loginToken string) er
 }
 
 func fetchWikipediaExtract(client *http.Client, title string) (string, error) {
-	apiURL := fmt.Sprintf("https://bn.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&exintro&explaintext&redirects=1&titles=%s", url.QueryEscape(title))
+	apiURL := fmt.Sprintf("https://bn.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&explaintext&redirects=1&titles=%s", url.QueryEscape(title))
 
 	resp, err := client.Get(apiURL)
 	if err != nil {
