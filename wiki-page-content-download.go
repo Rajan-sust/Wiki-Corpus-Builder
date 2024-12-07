@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -207,6 +208,32 @@ func performLogin(client *http.Client, username, password, loginToken string) er
 	return nil
 }
 
+// removeNukta replaces nuktas in Bangla text with their corresponding replacements
+func removeNukta(banglaText string) string {
+	nuktaReplacements := map[string]string{
+		"\u09A1\u09BC": "\u09DC", // \u09DC is 2524 in decimal
+		"\u09A2\u09BC": "\u09DD", // \u09DD is 2525 in decimal
+		"\u09AF\u09BC": "\u09DF", // \u09DF is 2527 in decimal
+	}
+
+	for nuktaChar, replacement := range nuktaReplacements {
+		banglaText = strings.ReplaceAll(banglaText, nuktaChar, replacement)
+	}
+
+	return banglaText
+}
+
+func preprocessText(input string) string {
+	// Remove nuktas
+	input = removeNukta(input)
+	// Define the regex for Bangla words
+	banglaWordRegex := regexp.MustCompile(`[\x{0980}-\x{09E5}\x{09F0}-\x{09FF}]+`)
+	// Find all matches in the input string
+	banglaWords := banglaWordRegex.FindAllString(input, -1)
+	return strings.Join(banglaWords, " ")
+
+}
+
 func fetchWikipediaExtract(client *http.Client, title string) (string, error) {
 	apiURL := fmt.Sprintf("https://bn.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&explaintext&redirects=1&titles=%s", url.QueryEscape(title))
 
@@ -228,7 +255,7 @@ func fetchWikipediaExtract(client *http.Client, title string) (string, error) {
 
 	var extract string
 	for _, page := range wikiResp.Query.Pages {
-		extract = strings.ReplaceAll(page.Extract, "\n", " ")
+		extract = preprocessText(page.Extract)
 		break
 	}
 
