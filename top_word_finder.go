@@ -2,146 +2,148 @@ package main
 
 import (
 	"bufio"
-	"container/heap"
-	"flag"
 	"fmt"
 	"os"
-	"strings"
+	"regexp"
+	"sort"
 	"sync"
+	"time"
 )
 
-// WordFreq represents a word and its frequency
-type WordFreq struct {
+type WordCount struct {
 	word  string
 	count int
 }
 
-// MinHeap implementation for WordFreq
-type MinHeap []WordFreq
-
-func (h MinHeap) Len() int           { return len(h) }
-func (h MinHeap) Less(i, j int) bool { return h[i].count < h[j].count }
-func (h MinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *MinHeap) Push(x interface{}) {
-	*h = append(*h, x.(WordFreq))
-}
-
-func (h *MinHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
-// processChunk processes a chunk of text and returns a map of word frequencies
-func processChunk(chunk string) map[string]int {
-	freqMap := make(map[string]int)
-	scanner := bufio.NewScanner(strings.NewReader(chunk))
-	scanner.Split(bufio.ScanWords)
-
-	for scanner.Scan() {
-		word := strings.ToLower(strings.TrimSpace(scanner.Text()))
-		if word != "" {
-			freqMap[word]++
-		}
-	}
-	return freqMap
-}
-
-// mergeFreqMaps merges multiple frequency maps into one
-func mergeFreqMaps(maps []map[string]int) map[string]int {
-	result := make(map[string]int)
-	for _, m := range maps {
-		for word, count := range m {
-			result[word] += count
-		}
-	}
-	return result
-}
-
 func main() {
-	// Command line flags
-	n := flag.Int("n", 10, "number of top words to find")
-	filename := flag.String("file", "", "input file path")
-	flag.Parse()
+	inputFile := "/home/ovishek/NLP_BrainStorming/word2vecbangla/new_db/merged.txt"
+	numWorkers := 12 // Number of worker threads
+	top_n := 100     // Number of top words to output
+	outputFile := fmt.Sprintf("top_words_%d.txt", top_n)
 
-	if *filename == "" {
-		fmt.Println("Please provide an input file using -file flag")
-		return
-	}
-
-	// Open the file
-	file, err := os.Open(*filename)
+	// Open the input file
+	file, err := os.Open(inputFile)
 	if err != nil {
 		fmt.Printf("Error opening file: %v\n", err)
 		return
 	}
 	defer file.Close()
 
-	// Create a buffered reader
-	reader := bufio.NewReader(file)
+	// Get file size for progress reporting
+	fileInfo, err := file.Stat()
+	if err != nil {
+		fmt.Printf("Error getting file stats: %v\n", err)
+		return
+	}
+	totalSize := fileInfo.Size()
 
-	// Channel for frequency maps from goroutines
-	freqChan := make(chan map[string]int)
+	// Create channels
+	lines := make(chan string, 1000)
+	results := make(chan map[string]int, numWorkers)
+	progress := make(chan int64, 1000)
+
 	var wg sync.WaitGroup
 
-	// Process the file in chunks
-	chunkSize := 64 * 1024 * 1024 // 64MB chunks
-	buffer := make([]byte, chunkSize)
-
-	// Start worker goroutines
+	// Start progress monitor
 	go func() {
-		for {
-			n, err := reader.Read(buffer)
-			if n > 0 {
-				wg.Add(1)
-				chunk := string(buffer[:n])
-				go func() {
-					defer wg.Done()
-					freqChan <- processChunk(chunk)
-				}()
-			}
-			if err != nil {
-				break
-			}
+		var processedBytes int64
+		startTime := time.Now()
+
+		for bytes := range progress {
+			processedBytes += bytes
+			percentage := float64(processedBytes) / float64(totalSize) * 100
+			elapsed := time.Since(startTime).Seconds()
+			speed := float64(processedBytes) / (1024 * 1024 * elapsed) // MB/s
+
+			fmt.Printf("\rProgress: %.2f%% (%.2f MB/s)", percentage, speed)
 		}
-		wg.Wait()
-		close(freqChan)
+		fmt.Println()
 	}()
 
-	// Collect and merge frequency maps
-	var freqMaps []map[string]int
-	for freqMap := range freqChan {
-		freqMaps = append(freqMaps, freqMap)
+	// Start worker goroutines
+	bengaliRegex := regexp.MustCompile(`[\p{Bengali}]+`)
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerId int) {
+			defer wg.Done()
+			wordCounts := make(map[string]int)
+			
+			for line := range lines {
+				matches := bengaliRegex.FindAllString(line, -1)
+				for _, word := range matches {
+					wordCounts[word]++
+				}
+			}
+			
+			results <- wordCounts
+			fmt.Printf("\nWorker %d completed\n", workerId)
+		}(i)
 	}
 
-	// Merge all frequency maps
-	finalFreqMap := mergeFreqMaps(freqMaps)
+	// Read file and send lines to workers
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // Increase buffer size
 
-	// Use a min-heap to find top N words
-	h := &MinHeap{}
-	heap.Init(h)
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			lines <- line
+			progress <- int64(len(line) + 1) // +1 for newline
+		}
+		close(lines)
+	}()
 
-	for word, count := range finalFreqMap {
-		wordFreq := WordFreq{word: word, count: count}
-		if h.Len() < *n {
-			heap.Push(h, wordFreq)
-		} else if count > (*h)[0].count {
-			heap.Pop(h)
-			heap.Push(h, wordFreq)
+	// Wait for workers and close results channel
+	go func() {
+		wg.Wait()
+		close(results)
+		close(progress)
+	}()
+
+	// Merge results
+	finalCounts := make(map[string]int)
+	for workerCounts := range results {
+		for word, count := range workerCounts {
+			finalCounts[word] += count
 		}
 	}
 
-	// Print results in reverse order (highest to lowest frequency)
-	results := make([]WordFreq, h.Len())
-	for i := h.Len() - 1; i >= 0; i-- {
-		results[i] = heap.Pop(h).(WordFreq)
+	// Convert to slice for sorting
+	var wordCounts []WordCount
+	for word, count := range finalCounts {
+		wordCounts = append(wordCounts, WordCount{word, count})
 	}
 
-	fmt.Printf("\nTop %d words by frequency:\n", *n)
-	for i := 0; i < len(results); i++ {
-		fmt.Printf("%s: %d\n", results[i].word, results[i].count)
+	// Sort by count (descending) and then by word
+	sort.Slice(wordCounts, func(i, j int) bool {
+		if wordCounts[i].count != wordCounts[j].count {
+			return wordCounts[i].count > wordCounts[j].count
+		}
+		return wordCounts[i].word < wordCounts[j].word
+	})
+
+	// Write top 200 words to output file
+	outFile, err := os.Create(outputFile)
+	if err != nil {
+		fmt.Printf("Error creating output file: %v\n", err)
+		return
 	}
+	defer outFile.Close()
+
+	writer := bufio.NewWriter(outFile)
+	for i := 0; i < min(top_n, len(wordCounts)); i++ {
+		_, err := fmt.Fprintf(writer, "%d %s\n", wordCounts[i].count, wordCounts[i].word)
+		if err != nil {
+			fmt.Printf("Error writing to output file: %v\n", err)
+			return
+		}
+	}
+	writer.Flush()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
